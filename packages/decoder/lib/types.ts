@@ -41,30 +41,28 @@ export interface DecoderSettings {
    */
   provider?: Provider;
   /**
-   * In the future, it will be possible to include this field to enable or
-   * disable ENS resolution.  Currently, it does nothing.
+   * This field can be included to enable or disable ENS resolution (and, in
+   * the future, reverse resolution) and specify how it should be performed.
+   * If absent, ENS resolution will be performed using the decoder's usual
+   * provider.
    */
   ens?: EnsSettings;
 }
 
 //WARNING: copypasted from @truffle/encoder!
 /**
- * In the future, this type will indicates settings to be used for ENS resolution
- * and reverse resolution.  Currently it does nothing.
+ * This type indicates settings to be used for ENS resolution (and, in the
+ * future, reverse resolution).
  * @Category Inputs
  */
 export interface EnsSettings {
   /**
-   * (This does nothing at present; this description is intended for the future.)
-   *
    * The provider to use for ENS resolution; set this to `null` to disable
    * ENS resolution.  If absent, will default to the decoder's provider,
    * and ENS resolution will be enabled.
    */
   provider?: Provider | null;
   /**
-   * (This does nothing at present; this description is intended for the future.)
-   *
    * The ENS registry address to use; if absent, will use the default one
    * for the current network.  If there is no default registry for the
    * current network, ENS resolution will be disabled.

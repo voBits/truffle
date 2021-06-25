@@ -20,7 +20,7 @@ import {
   decodeEvent,
   decodeReturndata
 } from "@truffle/codec";
-import * as Utils from "./utils";
+import * as Encoder from "@truffle/encoder";
 import type * as DecoderTypes from "./types";
 import Web3 from "web3";
 import type { ContractObject as Artifact } from "@truffle/contract-schema/spec";
@@ -1027,6 +1027,7 @@ export class ContractInstanceDecoder {
 
   private contractDecoder: ContractDecoder;
   private projectDecoder: ProjectDecoder;
+  private encoder: Encoder.ProjectEncoder;
 
   /**
    * @protected
@@ -1113,6 +1114,24 @@ export class ContractInstanceDecoder {
       //mash these together like I'm about to
       this.contexts = { ...this.contexts, ...this.additionalContexts };
     }
+
+    //set up encoder for wrapping elementary values.
+    //we pass it a provider, so it can handle ENS names.
+    let {
+      provider: ensProvider,
+      registryAddress
+    } = this.projectDecoder.getEnsSettings();
+    if (ensProvider === undefined) {
+      //note: NOT if it's null, if it's null we leave it null
+      ensProvider = this.web3.currentProvider;
+    }
+    this.encoder = await Encoder.forProjectInternal({
+      provider: ensProvider,
+      registryAddress,
+      userDefinedTypes: this.userDefinedTypes,
+      allocations: this.allocations,
+      networkId: parseInt(this.contractNetwork) //not actually needed but may as well
+    });
 
     //finally: set up internal functions table (only if source order is reliable;
     //otherwise leave as undefined)
@@ -1435,12 +1454,6 @@ export class ContractInstanceDecoder {
    * only possible in full mode; if the decoder wasn't able to start up in full
    * mode, this method will throw an exception.
    *
-   * **Warning**: At the moment, this function does very little to check its
-   * input.  Bad input may have unpredictable results.  This will be remedied
-   * in the future (by having it throw exceptions on bad input), but right now
-   * essentially no checking is implemented.  Also, there may be slight changes
-   * to the format of indices in the future.
-   *
    * (A bad variable name will cause an exception though; that input is checked.)
    * @param variable The variable that the mapping lives under; this works like
    *   the nameOrId argument to [[variable|variable()]].  If the mapping is a
@@ -1451,16 +1464,9 @@ export class ContractInstanceDecoder {
    *   variable argument; see the example.  Array indices and mapping
    *   keys are specified by value; struct members are specified by name.
    *
-   *   Numeric values can be given as number, BN, or
-   *   numeric string.  Bytestring values are given as hex strings.  Boolean
-   *   values are given as booleans, or as the strings "true" or "false".
-   *   Address values are given as hex strings; they are currently not required
-   *   to be in checksum case, but this will likely change in the future, so
-   *   don't rely on that.  Contract values work like address values.
-   *   Enum values can be given either as a numeric value or by name;
-   *   in the latter case you can use either a qualified name or just the
-   *   name of the option (i.e., you can just write `"Option"` rather than
-   *   `"Enum.Option"` or `"Contract.Enum.Option"`, but those will work too).
+   *   Values (for array indices and mapping keys) may be given in any format
+   *   understood by Truffle Encoder; see the documentation for
+   *   [[Encoder.ProjectEncoder.wrap|ProjectEncoder.wrap]] for details.
    *
    *   Note that if the path to a given mapping key
    *   includes mapping keys above it, any ancestors will also be watched
@@ -1513,9 +1519,7 @@ export class ContractInstanceDecoder {
    * Note that unwatching a mapping key will also unwatch all its descendants.
    * E.g., if `m` is of type `mapping(uint => mapping(uint => uint))`, then
    * unwatching `m[0]` will also unwatch `m[0][0]`, `m[0][1]`, etc, if these
-   * are currently watched
-   *
-   * This function has the same caveats as watchMappingKey.
+   * are currently watched.
    */
   public async unwatchMappingKey(
     variable: number | string,
@@ -1679,16 +1683,24 @@ export class ContractInstanceDecoder {
       return { slot: undefined, type: undefined };
     }
     let rawIndex = indices[indices.length - 1];
-    let index: any;
-    let key: Format.Values.ElementaryValue;
     let slot: Storage.Slot;
     let dataType: Format.Types.Type;
     switch (parentType.typeClass) {
       case "array":
-        if (rawIndex instanceof BN) {
-          index = rawIndex.clone();
-        } else {
-          index = new BN(rawIndex);
+        const wrappedIndex = <Format.Values.UintValue>(
+          await this.encoder.wrapElementaryValue(
+            { typeClass: "uint", bits: 256 },
+            rawIndex
+          )
+        );
+        const index = wrappedIndex.value.asBN;
+        if (parentType.kind === "static" && index.gte(parentType.length)) {
+          throw new ArrayIndexOutOfBoundsError(
+            index,
+            parentType.length,
+            variable,
+            indices
+          );
         }
         dataType = parentType.baseType;
         let size = Storage.Allocate.storageSize(
@@ -1707,12 +1719,7 @@ export class ContractInstanceDecoder {
         break;
       case "mapping":
         let keyType = parentType.keyType;
-        if (keyType.typeClass === "enum") {
-          keyType = <Format.Types.EnumType>(
-            Format.Types.fullType(keyType, this.userDefinedTypes)
-          );
-        }
-        key = Utils.wrapElementaryValue(rawIndex, keyType);
+        const key = await this.encoder.wrapElementaryValue(keyType, rawIndex);
         dataType = parentType.valueType;
         slot = {
           path: parentSlot,
